@@ -301,3 +301,195 @@ RETURN datetime({epochmillis:timestamp()}).day,
 - `toLower()`;
 - `toUpper()`;
 - `toString()`;
+
+# Controlling the query chain
+
+## Objectives
+
+- Intermediate processing with `WITH`;
+- `WITH` and `UNWIND` for query processing;
+- Subqueries with `WITH`;
+- Subqueries with `CALL`;
+
+## WITH and intermediate processing
+
+```cypher
+MATCH (a:Person) -[:ACTED_IN]->(m:Movie)
+RETURN a.name, count(m) AS numMvoies,
+       collect(m.title) AS movies
+```
+Above we return all the actors along with the number of movies they acted in and a movie titles. If we want to filter query returning the actors played in more than one movie, we can use `WITH` to perform intermediate processing which is impossible in `RETURN`:
+
+```cypher
+MATCH (p:Person)-[:ACTED_IN]->(m:Movie)
+WITH a, count(m) AS numMovies, collect(m.title) AS movies
+WHERE 1 < numMovies < 4
+RETURN a.name, numMovies, movies
+```
+
+In `WITH` clause we specify the variables from the *previous* part of th equery, which you want to pass to the next part of the query. In example above, `m` is not specified to be passed to the next query and won't be available under the `RETURN` statement.
+
+## UNWIND
+
+Records collected into array can be unwinded to the plane talbe:
+
+```cypher
+MATCH (p:Person)-[:ACTED_IN]->(m:Movie)
+WITH collect(p) AS actors,
+     count(p) AS actorCount, m
+UNWIND actors AS actor
+RETURN m.title, actorCount, actor.name
+```
+
+## Subqueries with `WITH`
+
+### Example 1
+
+We can call additional `MATCH` clause under the `WITH` clause:
+
+```cypher
+MATCH (m:Movie)<-[rv:REVIEWED]-(p:Person)
+WITH m, rv, p
+     MATCH (m)<-[d:DIRECTED]-(d:Person)
+RETURN m.title, rv.rating, r.name, collect(d.name)
+```
+
+### Example 2
+
+```cypher
+MATCH (p:Person)
+WITH p, size((p)-[:ACTED_IN]->()) AS movies
+WHERE movies >= 5
+OPTIONAL MATCH (p)-[:DIRECTED]->(m:Movie)
+RETURN p.name, m.title
+```
+
+1. find all persons;
+2. find the number of `p`'s with relationship `ACTED_IN` to *any vertex*;
+3. filter results so that `movies` is greater or equal 5;
+4. optionally find if the `p` directed any movie;
+5. return name of the person and the movie title
+
+## Subqueries with `CALL`
+
+Using `CALL` for subqueries you call subquery withing `CALL` which must return subset of nodes, and use this subset by subsequent query:
+
+```cypher
+CALL 
+{MATCH (p:Person)-[:REVIEWED]->(m:Movie)
+RETURN m}
+MATCH (m) WHERE m.released = 2000
+RETURN m.title, m.released
+```
+
+# Controlling results returned
+
+## Eliminate duplication in results
+
+Results with duplicates:
+
+```cypher
+MATCH (p:Perosn)[:DIRECTED | ACTED_IN]->(m:Movie)
+WHERE p.name = 'Tom Hanks'
+RETURN m.title, m.released
+```
+No duplicates:
+
+```cypher
+MATCH (p:Perosn)[:DIRECTED | ACTED_IN]->(m:Movie)
+WHERE p.name = 'Tom Hanks'
+RETURN DISTINCT m.title, m.released
+```
+
+### Duplication in lists
+
+Results with duplications in list
+
+```cypher
+MATCH (p:Person)-[:ACTED_IN | DIRECTED | WROTE]->(m:Movie)
+WHERE m.released = 2003
+RETURN m.title, collect(p.name) AS credits
+```
+
+Results without duplications in list
+
+```cypher
+MATCH (p:Person)-[:ACTED_IN | DIRECTED | WROTE]->(m:Movie)
+WHERE m.released = 2003
+RETURN m.title, collect(DISTINCT p.name) AS credits
+```
+
+### Using `WITH`
+
+```cypher
+MATCH (p:Person)-[:ACTED_IN | DIRECTED]->(m:Movie)
+WHERE p.name = 'Tom Hanks'
+WITH DISTINCT m
+RETURN m.title, m.released
+```
+
+## Order results
+
+>If you want the results to be sorted, you specify the expression to use for the sort using the ORDER BY keyword and whether you want the order to be descending using the DESC keyword. Ascending order is the default.
+
+```cypher
+MATCH (p:Person)-[:DIRECTED | ACTED_IN]->(m:Movie)
+WHERE p.name = 'Tom Hanks' OR p.name = 'Keanu Reeves'
+RETURN DISTINCT m.title, m.released ORDER BY m.released DESC
+```
+
+### Ordering multiple results
+
+```cypher
+MATCH (p:Person)-[:DIRECTED | ACTED_IN]->(m:Movie)
+WHERE p.name = 'Tom Hanks' OR p.name = 'Keanu Reeves'
+RETURN DISTINCT m.title, m.released ORDER BY m.released DESC, m.title
+```
+
+## Limit the number of results
+
+>You can use the LIMIT keyword to specify the number of results returned.
+
+```cypher
+MATCH (m:Movie)
+RETURN m.title AS title, m.released AS year ORDER BY m.released DESC LIMIT 10
+```
+###   Limiting number of intermediate results
+
+>Furthermore, you can use the LIMIT keyword with the WITH clause to limit intermediate results. A best practice is to limit the number of rows processed before they are collected. 
+
+```cypher
+MATCH (p:Person)-[:ACTED_IN]->(m:Movie)
+WITH m, p LIMIT 10
+RETURN collect(p.name), m.title
+```
+
+### Another example using LIMIT
+
+```cypher
+MATCH (m:Movie)
+WITH m LIMIT 5
+MATCH path = (m)<-[:ACTED_IN]-(:Person)
+WITH m, collect(path) AS paths
+RETURN m, paths[0..2]
+```
+
+### Alternatives to  `LIMIT`
+
+>Another way that you can limit results is to collect or count them during the query and use the count to end the query processing. In this example, we count the number of movies during the query and we return the results once we have reached 5 movies. That is, the question we are asking is, "What actors acted in exactly five movies?".
+
+```cypher
+MATCH (a:Person)-[:ACTED_IN]->(m:Movie)
+WITH a, count(*) AS numMovies, collect(m.title) AS movies
+WHERE numMovies = 5
+RETURN a.name, numMovies, movies
+```
+
+An alternative to the code is:
+
+```cypher
+MATCH (a:Person)-[:ACTED_IN]->(m:Movie)
+WITH a, collect(m.title) AS movies
+WHERE size(movies) = 5
+RETURN a.name, movies
+```
